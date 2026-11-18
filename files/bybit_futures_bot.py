@@ -6,6 +6,9 @@
   по тренду; стоп 3 ATR и тейк 4 ATR ставятся на бирже; выход по времени через 30 свечей (5 дней);
   риск 1% на сделку, плечо до 3x, до 4 позиций. В среднем ~0.7 сделки в день по 8 монетам (бэктест).
 Плюс фильтр режима рынка (regime_filter.py) и аварийный стоп по просадке (circuit_breaker.py).
+Монеты, риск, число позиций и «сделка дня» задаются в config.yaml (futures_strategy: coins, profile,
+risk_pct, max_positions, daily_min_trade). Профиль aggressive разрешает риск до 10% (только демо),
+обычный — до 2%. Монеты, которых нет на Bybit, пропускаются. Объём округляется по qtyStep/minQty/minNotional биржи.
 
 Старый режим mode: ema_cross (как kraken_futures_bot.py / alts_short_backtest.py "EMA (50,200)", лонг и шорт):
   шорт-условие = EMA50 < EMA200 и close < EMA200 ; лонг-условие = EMA50 > EMA200 и close > EMA200
@@ -35,7 +38,9 @@ BREAKER_RESET_F = os.path.join(BASE, circuit_breaker.RESET_FILE_NAME)
 CONFIG_F = os.path.join(BASE, "config.yaml")
 REPORT_F = os.path.join(BASE, "отчёт.csv")   # история баланса, открывается в Excel
 REPORT_COLS = ["time", "equity", "usdt", "unrealized_pnl", "open_positions", "change_24h", "btc_value"]
-COINS = ["ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "AVAX", "LINK"]
+DEFAULT_COINS = ["ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "AVAX", "LINK"]
+COINS = list(DEFAULT_COINS)   # список берётся из config.yaml -> futures_strategy -> coins
+MAX_COINS, MAX_POS_CAP = 40, 8
 FAST, SLOW, ATR_N, STOP_K = 50, 200, 14, 5.0
 RISK, LEV, MAX_POS, TOTAL_NOTIONAL_X = 0.02, 3, 4, 3.0
 ACTIVE_RISK = 0.01            # риск на сделку в активном режиме (стоп ближе, сделок больше)
@@ -115,13 +120,21 @@ def news_gate():
 
 def strategy_cfg():
     """Раздел futures_strategy из config.yaml: mode active (по умолчанию) или ema_cross (старая стратегия)."""
-    out = {"mode": "active", "risk_pct": ACTIVE_RISK * 100, "active": {}}
+    out = {"mode": "active", "risk_pct": ACTIVE_RISK * 100, "active": {}, "profile": "normal",
+           "coins": list(DEFAULT_COINS), "max_positions": 4, "daily_min_trade": False}
     try:
-        import yaml
+        import yaml, re
         with open(CONFIG_F, encoding="utf-8") as fh: c = (yaml.safe_load(fh) or {}).get("futures_strategy") or {}
         if str(c.get("mode", "active")).strip() in ("active", "ema_cross"): out["mode"] = str(c.get("mode", "active")).strip()
-        out["risk_pct"] = min(max(f(c.get("risk_pct"), ACTIVE_RISK * 100), 0.1), 2.0)   # жёстко 0.1..2%
+        out["profile"] = "aggressive" if str(c.get("profile", "normal")).strip() == "aggressive" else "normal"
+        cap = 10.0 if out["profile"] == "aggressive" else 2.0     # жёстко: обычный профиль до 2%, агрессивный до 10%
+        out["risk_pct"] = min(max(f(c.get("risk_pct"), ACTIVE_RISK * 100), 0.1), cap)
         out["active"] = c.get("active") or {}
+        coins = [str(x).strip().upper() for x in (c.get("coins") or []) if re.fullmatch(r"[A-Z0-9]{2,20}", str(x).strip().upper())]
+        coins = [x[:-4] if x.endswith("USDT") else x for x in coins]
+        if coins: out["coins"] = list(dict.fromkeys(coins))[:MAX_COINS]
+        out["max_positions"] = int(min(max(f(c.get("max_positions"), 4), 1), MAX_POS_CAP))
+        out["daily_min_trade"] = bool(c.get("daily_min_trade", False))
     except FileNotFoundError: pass
     except Exception as e: log(f"config.yaml: раздел futures_strategy не прочитан ({str(e)[:80]}), активный режим по умолчанию")
     return out
@@ -157,10 +170,12 @@ def candles(cl, coin):
     d["long"] = (d.ef > d.es) & (d.c > d.es)
     return d
 
-def instruments(cl):
+def instruments(cl, coins=None):
     out = {}
-    for c in COINS:
-        it = lst(cl.get_instruments_info(category=CAT, symbol=sym(c)))
+    for c in (coins or COINS):
+        try: it = lst(cl.get_instruments_info(category=CAT, symbol=sym(c)))
+        except Exception: it = []
+        if it and it[0].get("status") not in (None, "", "Trading"): it = []
         if not it: continue
         lf, pf = it[0].get("lotSizeFilter", {}), it[0].get("priceFilter", {})
         out[c] = {"qtyStep": lf.get("qtyStep") or "0.001", "minQty": f(lf.get("minOrderQty")),
@@ -266,7 +281,11 @@ def closed_pnl(cl, symbol, since_ms, order_id=None, tries=1):
 # ---------------- один прогон ----------------
 def run_once(cl, inst):
     S = load_state(); gate = news_gate(); errors = []
+    global COINS, MAX_POS
     st_cfg = strategy_cfg(); MODE = st_cfg["mode"]; acfg = active_strategy.merged(st_cfg["active"])
+    COINS = [c for c in st_cfg["coins"] if c in inst]; MAX_POS = st_cfg["max_positions"]
+    COINS += [c for c in S["positions"] if c in inst and c not in COINS]   # монету убрали из списка, а позиция ещё открыта
+    new_bar = False
     def safe(label, fn, *a, **kw):
         try: return fn(*a, **kw)
         except Exception as e:
@@ -366,12 +385,71 @@ def run_once(cl, inst):
     # 2) по каждой монете: выход по смене сигнала, подтяжка стопа, свежий вход
     pos = exch_positions(cl)
     notional = sum(p["value"] for p in pos.values())
+    def try_enter(coin, fresh, why="signal"):
+        """Открыть позицию по монете в направлении fresh. why: signal | daily (сделка дня). True = открыта."""
+        nonlocal notional
+        d = data[coin]; b = d.iloc[-1]; ins = inst[coin]; last_t = int(d.t.iloc[-1])
+        row = jbase(coin, fresh)
+        if MODE == "active":
+            atr_sig = float(act[coin].atr.iloc[-1]); dist = acfg["sl_atr"] * atr_sig; risk = st_cfg["risk_pct"] / 100
+        else:
+            dist = STOP_K * float(b.atr); risk = RISK
+        if coin in S["positions"] or sym(coin) in pos:
+            row.update(action="skip", reason="уже есть позиция по монете"); journal(row); return False
+        if gate.get("block_new_entries") or gate["size_mult"] <= 0:
+            row.update(action="skip", reason="новостной фильтр запретил вход"); journal(row); return False
+        if brk["block_new"]:
+            row.update(action="skip", reason="аварийный стоп по просадке запретил вход"); journal(row)
+            log(f"{coin}: свежий сигнал {fresh}, но аварийный стоп запрещает новые входы — пропуск"); return False
+        rmult = regime_filter.size_mult(reg["score"], fresh, reg_cfg) if reg.get("enabled") else 1.0
+        if rmult <= 0:
+            row.update(action="skip", reason=f"фильтр режима рынка ({reg['score']:.0f}/100) запретил {fresh}"); journal(row)
+            log(f"{coin}: свежий сигнал {fresh}, но режим рынка {reg['score']:.0f}/100 против него — пропуск"); return False
+        if len(pos) >= MAX_POS:
+            row.update(action="skip", reason=f"уже {MAX_POS} позиции"); journal(row)
+            log(f"{coin}: свежий сигнал {fresh}, но уже {MAX_POS} позиции — пропуск"); return False
+        px = mark_price(cl, sym(coin))
+        lev = int(min(LEV, ins["maxLev"]))
+        if rmult < 1: log(f"{coin}: режим рынка {reg['score']:.0f}/100 против {fresh} — вход половинным размером")
+        qty = min(risk * equity * gate["size_mult"] * rmult / dist, lev * equity / px,
+                  max(0.0, TOTAL_NOTIONAL_X * equity - notional) / px, ins["maxMkt"])
+        qty = q_floor(qty, ins["qtyStep"])
+        if float(qty) < ins["minQty"] or float(qty) * px < ins["minNotional"] or qty <= 0:
+            row.update(action="skip", reason=f"объём {qty} меньше минимального / лимит объёма"); journal(row); return False
+        set_lev(cl, sym(coin), lev)
+        oid = market(cl, sym(coin), "Sell" if fresh == "short" else "Buy", qty, False)
+        ep = wait_position(cl, sym(coin), want_open=True)
+        fill = ep["avg"] if ep and ep["avg"] > 0 else px
+        real_qty = ep["size"] if ep else float(qty)
+        stop = fill + dist if fresh == "short" else fill - dist
+        S["positions"][coin] = {"dir": fresh, "qty": real_qty, "entry": fill, "best": fill, "stop": float(stop),
+                                "opened_ms": int(time.time() * 1000) - 30_000, "opened_at": now_utc().isoformat(),
+                                "equity_at_entry": equity, "signal_bar": bar_iso(b.t), "order_id": oid}
+        save_state(S)
+        if MODE == "active":
+            stop, tp = active_strategy.levels(fill, atr_sig, fresh, acfg)
+            sp, tpp = set_stop_tp(cl, sym(coin), stop, tp, ins["tick"], fresh)
+            S["positions"][coin].update(stop=sp, tp=tpp, mode="active", entry_bar_t=last_t + BAR_MS,
+                                        max_hold=int(acfg["max_hold_bars"]))
+            save_state(S)
+        else:
+            S["positions"][coin]["stop"] = set_stop(cl, sym(coin), stop, ins["tick"], fresh); save_state(S)
+        notional += real_qty * fill; pos[sym(coin)] = {"value": real_qty * fill}
+        row.update(action="entry", reason=((f"сделка дня: самый сильный сетап по тренду {fresh}" if why == "daily" else f"пробой/сигнал активной стратегии {fresh}") if MODE == "active" else f"свежий сигнал EMA{FAST}/{SLOW} {fresh}") + (f", размер x{rmult:g} (режим рынка)" if rmult < 1 else ""), price=fill, qty=real_qty,
+                   notional=real_qty * fill, stop=S["positions"][coin]["stop"], order_id=oid); journal(row)
+        tp_txt = f", тейк {S['positions'][coin]['tp']:.6g}" if S["positions"][coin].get("tp") else ""
+        log(f"{coin}: ОТКРЫТ {'ЛОНГ' if fresh=='long' else 'ШОРТ'} {real_qty} по {fill:.6g}, стоп {S['positions'][coin]['stop']:.6g}{tp_txt}, "
+            f"объём {real_qty*fill:.0f} USDT")
+        S["last_entry_ms"] = int(time.time() * 1000); save_state(S)
+        return True
+
     for coin in COINS:
         d = data.get(coin)
         if d is None or coin not in inst: continue
         try:
             last_t = int(d.t.iloc[-1]); prev = S["last_bar"].get(coin)
             if prev is not None and last_t <= prev: continue        # новой закрытой 4h свечи нет
+            new_bar = True
             new_idx = (list(d.index[d.t > prev]) if prev else [d.index[-1]])[-2:]
             b = d.iloc[-1]; p = S["positions"].get(coin); ins = inst[coin]
             if p and p.get("mode") == "active":
@@ -425,63 +503,35 @@ def run_once(cl, inst):
                         if bool(d.loc[i, dr]) and not bool(d.loc[i - 1, dr]) and bool(b[dr]): fresh = dr
             S["last_bar"][coin] = last_t; save_state(S)
             if not fresh: continue
-            row = jbase(coin, fresh)
-            if MODE == "active":
-                atr_sig = float(act[coin].atr.iloc[-1]); dist = acfg["sl_atr"] * atr_sig; risk = st_cfg["risk_pct"] / 100
-            else:
-                dist = STOP_K * float(b.atr); risk = RISK
-            if coin in S["positions"] or sym(coin) in pos:
-                row.update(action="skip", reason="уже есть позиция по монете"); journal(row); continue
-            if gate.get("block_new_entries") or gate["size_mult"] <= 0:
-                row.update(action="skip", reason="новостной фильтр запретил вход"); journal(row); continue
-            if brk["block_new"]:
-                row.update(action="skip", reason="аварийный стоп по просадке запретил вход"); journal(row)
-                log(f"{coin}: свежий сигнал {fresh}, но аварийный стоп запрещает новые входы — пропуск"); continue
-            rmult = regime_filter.size_mult(reg["score"], fresh, reg_cfg) if reg.get("enabled") else 1.0
-            if rmult <= 0:
-                row.update(action="skip", reason=f"фильтр режима рынка ({reg['score']:.0f}/100) запретил {fresh}"); journal(row)
-                log(f"{coin}: свежий сигнал {fresh}, но режим рынка {reg['score']:.0f}/100 против него — пропуск"); continue
-            if len(pos) >= MAX_POS:
-                row.update(action="skip", reason=f"уже {MAX_POS} позиции"); journal(row)
-                log(f"{coin}: свежий сигнал {fresh}, но уже {MAX_POS} позиции — пропуск"); continue
-            px = mark_price(cl, sym(coin))
-            lev = int(min(LEV, ins["maxLev"]))
-            if rmult < 1: log(f"{coin}: режим рынка {reg['score']:.0f}/100 против {fresh} — вход половинным размером")
-            qty = min(risk * equity * gate["size_mult"] * rmult / dist, lev * equity / px,
-                      max(0.0, TOTAL_NOTIONAL_X * equity - notional) / px, ins["maxMkt"])
-            qty = q_floor(qty, ins["qtyStep"])
-            if float(qty) < ins["minQty"] or float(qty) * px < ins["minNotional"] or qty <= 0:
-                row.update(action="skip", reason=f"объём {qty} меньше минимального / лимит объёма"); journal(row); continue
-            set_lev(cl, sym(coin), lev)
-            oid = market(cl, sym(coin), "Sell" if fresh == "short" else "Buy", qty, False)
-            ep = wait_position(cl, sym(coin), want_open=True)
-            fill = ep["avg"] if ep and ep["avg"] > 0 else px
-            real_qty = ep["size"] if ep else float(qty)
-            stop = fill + dist if fresh == "short" else fill - dist
-            S["positions"][coin] = {"dir": fresh, "qty": real_qty, "entry": fill, "best": fill, "stop": float(stop),
-                                    "opened_ms": int(time.time() * 1000) - 30_000, "opened_at": now_utc().isoformat(),
-                                    "equity_at_entry": equity, "signal_bar": bar_iso(b.t), "order_id": oid}
-            save_state(S)
-            if MODE == "active":
-                stop, tp = active_strategy.levels(fill, atr_sig, fresh, acfg)
-                sp, tpp = set_stop_tp(cl, sym(coin), stop, tp, ins["tick"], fresh)
-                S["positions"][coin].update(stop=sp, tp=tpp, mode="active", entry_bar_t=last_t + BAR_MS,
-                                            max_hold=int(acfg["max_hold_bars"]))
-                save_state(S)
-            else:
-                S["positions"][coin]["stop"] = set_stop(cl, sym(coin), stop, ins["tick"], fresh); save_state(S)
-            notional += real_qty * fill; pos[sym(coin)] = {"value": real_qty * fill}
-            row.update(action="entry", reason=(f"пробой/сигнал активной стратегии {fresh}" if MODE == "active" else f"свежий сигнал EMA{FAST}/{SLOW} {fresh}") + (f", размер x{rmult:g} (режим рынка)" if rmult < 1 else ""), price=fill, qty=real_qty,
-                       notional=real_qty * fill, stop=S["positions"][coin]["stop"], order_id=oid); journal(row)
-            tp_txt = f", тейк {S['positions'][coin]['tp']:.6g}" if S["positions"][coin].get("tp") else ""
-            log(f"{coin}: ОТКРЫТ {'ЛОНГ' if fresh=='long' else 'ШОРТ'} {real_qty} по {fill:.6g}, стоп {S['positions'][coin]['stop']:.6g}{tp_txt}, "
-                f"объём {real_qty*fill:.0f} USDT")
+            try_enter(coin, fresh)
         except Exception as e:
             tb = traceback.extract_tb(e.__traceback__)[-1]
             msg = f"{coin}: {e} (стр. {tb.lineno}, {tb.name})"
             print(f"Ошибка шага: {msg}", file=sys.stderr, flush=True); errors.append(msg)
             if "10001" in str(e) and "position idx" in str(e).lower():
                 print("Подсказка: переключите фьючерсы USDT в односторонний режим (One-Way) в настройках Bybit.", file=sys.stderr)
+
+    # 2б) «сделка дня»: если за 24 часа не было ни одного входа — открыть самый сильный сетап по тренду
+    if MODE == "active" and st_cfg["daily_min_trade"] and new_bar and not brk["block_new"]:
+        last_e = int(S.get("last_entry_ms", 0) or 0)
+        if time.time() * 1000 - last_e >= 86_400_000 and len(pos) < MAX_POS:
+            best = None
+            for coin, x in act.items():
+                if coin not in inst or coin in S["positions"] or sym(coin) in pos: continue
+                tr_, atr_ = int(x.trend.iloc[-1]), float(x.atr.iloc[-1])
+                hh, ll = float(x.h.iloc[-31:-1].max()), float(x.l.iloc[-31:-1].min())
+                if tr_ == 0 or not atr_ > 0 or len(x) < 31: continue
+                sc_ = (float(x.c.iloc[-1]) - hh) / atr_ if tr_ > 0 else (ll - float(x.c.iloc[-1])) / atr_
+                if best is None or sc_ > best[0]: best = (sc_, coin, "long" if tr_ > 0 else "short")
+            if best:
+                log(f"сделка дня: за 24 часа входов не было — беру самый сильный сетап {best[1]} "
+                    f"{'ЛОНГ' if best[2]=='long' else 'ШОРТ'} (до уровня пробоя {-best[0]:.2f} ATR)" if best[0] < 0 else
+                    f"сделка дня: {best[1]} {'ЛОНГ' if best[2]=='long' else 'ШОРТ'}")
+                try: try_enter(best[1], best[2], "daily")
+                except Exception as e:
+                    msg = f"сделка дня {best[1]}: {e}"; print(f"Ошибка шага: {msg}", file=sys.stderr, flush=True); errors.append(msg)
+            else:
+                log("сделка дня: нет монеты с ясным трендом, пропускаю")
 
     # 3) итог
     save_state(S)
@@ -598,14 +648,20 @@ def main():
     os.makedirs(os.path.dirname(STATE_F), exist_ok=True); os.makedirs(os.path.dirname(JOURNAL_F), exist_ok=True)
     cl = make_client()
     sc = strategy_cfg()
-    log(f"демо-счёт Bybit ({cl.endpoint}), монеты: {' '.join(COINS)}, стратегия {'АКТИВНАЯ' if sc['mode']=='active' else 'EMA50/200'}, "
-        f"риск {sc['risk_pct'] if sc['mode']=='active' else RISK*100:g}%, плечо до {LEV}x, макс. {MAX_POS} позиции")
+    log(f"демо-счёт Bybit ({cl.endpoint}), профиль {'АГРЕССИВНЫЙ' if sc['profile']=='aggressive' else 'обычный'}, "
+        f"монет {len(sc['coins'])}: {' '.join(sc['coins'])}")
+    log(f"стратегия {'АКТИВНАЯ' if sc['mode']=='active' else 'EMA50/200'}, риск {sc['risk_pct'] if sc['mode']=='active' else RISK*100:g}% на сделку, "
+        f"плечо до {LEV}x, макс. {sc['max_positions']} позиций" + (", сделка каждый день: да" if sc["daily_min_trade"] else ""))
     try_one_way(cl)
-    inst = None
+    inst = None; missing = set()
     while True:
         try:
             bybit_time.ensure_synced()
-            if not inst: inst = instruments(cl)
+            want = set(strategy_cfg()["coins"])
+            if not inst or not want <= set(inst) | missing:
+                inst = instruments(cl, sorted(want))
+                missing = want - set(inst)
+                if missing: log(f"не найдены на Bybit (пропускаю): {', '.join(sorted(missing))}")
             run_once(cl, inst)
         except Exception as e:
             tb = traceback.extract_tb(e.__traceback__)

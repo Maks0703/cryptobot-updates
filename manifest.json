@@ -1,5 +1,5 @@
 {
- "version": "2026.11.18-2238",
+ "version": "2026.11.18-2300",
  "files": {
   "README.md": {
    "sha256": "33809bb01b4bf7d6473c29e456c2bc8bf69701da316c92acca6effb188f089e4",
@@ -26,8 +26,8 @@
    "size": 18186
   },
   "bybit_futures_bot.py": {
-   "sha256": "e00d6a0706d7a9879fada483444152eb588d02afa4de23c8f0276cf1ef5a23b0",
-   "size": 39958
+   "sha256": "e93a364fea9267caa539e81b840f93abb76d1c508c0e1ee68d5881c4d42e7324",
+   "size": 44515
   },
   "bybit_time.py": {
    "sha256": "679c5a57e732c3820f9410a673b020398dec481bc0f769ba1e72e9d82a979429",
@@ -38,13 +38,14 @@
    "size": 9084
   },
   "config.yaml": {
-   "sha256": "47f320ac04c8009c2e138140378ea012a92c55ac291c63429c05dae3363dbf8f",
-   "size": 5186,
+   "sha256": "e6f9eb991ecaf892f8b3035eaa2843ea49541280be7c3a36bb03c5aab618d263",
+   "size": 6165,
    "mode": "if_unmodified",
    "known": [
     "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844",
     "447753de53d8ba58d312ae480e0146e2759aeb2e5d5f4336eabaf94ebc51aed1",
-    "47f320ac04c8009c2e138140378ea012a92c55ac291c63429c05dae3363dbf8f"
+    "47f320ac04c8009c2e138140378ea012a92c55ac291c63429c05dae3363dbf8f",
+    "e6f9eb991ecaf892f8b3035eaa2843ea49541280be7c3a36bb03c5aab618d263"
    ]
   },
   "fetch_alt_funding.py": {

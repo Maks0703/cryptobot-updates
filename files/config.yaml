@@ -45,8 +45,16 @@ mode:
 
 # ===== Стратегия фьючерсного бота (bybit_futures_bot.py, только демо-счёт) =====
 futures_strategy:
-  mode: active                  # active = пробой по тренду, сделки почти каждый день; ema_cross = старая (редкие сделки)
-  risk_pct: 1                   # риск на сделку в активном режиме, % капитала (бот не даст больше 2)
+  mode: active                  # active = пробой по тренду; ema_cross = старая стратегия (редкие сделки)
+  profile: aggressive           # aggressive = ДЕМО-эксперимент Максима; normal = обычный (риск до 2%)
+  risk_pct: 10                  # риск на сделку, % капитала. normal: не больше 2, aggressive: не больше 10.
+                                # Плечо всё равно не больше 3x, поэтому реальный риск обычно 4-7%.
+  max_positions: 8              # одновременно позиций (бот не даст больше 8)
+  daily_min_trade: true         # если за 24 часа не было входа — открыть самый сильный сетап по тренду
+  coins:                        # монеты (имя фьючерса Bybit без USDT). Не найденные на Bybit бот пропустит.
+    [ETH, SOL, XRP, BNB, DOGE, ADA, AVAX, LINK,
+     1000PEPE, WIF, 1000BONK, SHIB1000, 1000FLOKI,
+     SUI, NEAR, APT, ARB, OP, INJ, TIA, LTC, DOT, TRX, BCH, ETC, ATOM, UNI, AAVE, SEI, WLD, ENA, HBAR, FIL]
   active:
     breakout_n: 30              # пробой максимума/минимума последних 30 свечей 4h (5 дней)
     sl_atr: 3                   # стоп = 3 ATR(14) от входа
@@ -58,7 +66,7 @@ futures_strategy:
 # (кроме close_all_enabled, который по умолчанию выключен).
 futures_protection:
   regime_filter:                # фильтр режима рынка: оценка 0-100 (тренд BTC + сколько монет выше EMA200)
-    enabled: true
+    enabled: false              # в агрессивном профиле выключен (берём все сигналы)
     block_longs_below: 20       # оценка <= 20 (сильный медвежий рынок): новые лонги запрещены
     halve_longs_below: 40       # оценка < 40: новые лонги половинным размером
     halve_shorts_above: 60      # оценка > 60: новые шорты половинным размером
@@ -66,7 +74,7 @@ futures_protection:
     weight_fear_greed: 0        # 0 = индекс страха и жадности не учитывается
   circuit_breaker:              # аварийный стоп по просадке капитала
     enabled: true
-    daily_limit_pct: 5          # -5% за сутки UTC -> до 00:00 UTC (03:00 Минск) новых входов нет
-    peak_limit_pct: 20          # -20% от максимума -> новых входов нет до ручного сброса (файл сброс_стопа.txt)
+    daily_limit_pct: 100        # 100 = дневной стоп выключен (обычный профиль: 5)
+    peak_limit_pct: 30          # -30% от максимума -> новых входов нет до ручного сброса (файл сброс_стопа.txt)
     close_all_enabled: false    # true = при close_all_pct закрыть все позиции бота по рынку
-    close_all_pct: 25
+    close_all_pct: 40
