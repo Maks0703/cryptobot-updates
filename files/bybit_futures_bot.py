@@ -27,7 +27,7 @@ import argparse, csv, json, os, sys, time, traceback
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import pandas as pd
-import regime_filter, circuit_breaker, bybit_time, active_strategy
+import regime_filter, circuit_breaker, bybit_time, active_strategy, pre_trade_gate
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE_F = os.path.join(BASE, "state", "bybit_futures_state.json")
@@ -154,6 +154,17 @@ def protection_cfg():
         return {}, {}
 
 
+def gate_cfg():
+    """futures_protection -> pre_trade_gate из config.yaml (нет -> значения по умолчанию, проверка включена)."""
+    try:
+        import yaml
+        with open(CONFIG_F, encoding="utf-8") as fh: c = yaml.safe_load(fh) or {}
+        g = (c.get("futures_protection") or {}).get("pre_trade_gate")
+        return g if isinstance(g, dict) else {}
+    except Exception:
+        return {}
+
+
 # ---------------- биржа ----------------
 def candles(cl, coin):
     k = lst(cl.get_kline(category=CAT, symbol=sym(coin), interval="240", limit=1000))
@@ -214,6 +225,23 @@ def exch_positions(cl):
         cursor = (r or {}).get("result", {}).get("nextPageCursor")
         if not cursor: break
     return out
+
+def ticker_info(cl, symbol):
+    """Цена маркировки и лучшие цены покупки/продажи (для проверки спреда)."""
+    t = lst(cl.get_tickers(category=CAT, symbol=symbol))
+    if not t: raise RuntimeError(f"нет тикера {symbol}")
+    t = t[0]
+    return {"mark": f(t.get("markPrice")) or f(t.get("lastPrice")), "bid": f(t.get("bid1Price")), "ask": f(t.get("ask1Price"))}
+
+
+def open_order_symbols(cl):
+    """Символы с висящими ордерами (без стопов позиций). None — биржа не ответила."""
+    try:
+        r = lst(cl.get_open_orders(category=CAT, settleCoin="USDT", openOnly=0, limit=50))
+        return {o.get("symbol") for o in r if not o.get("stopOrderType") and not o.get("reduceOnly")}
+    except Exception:
+        return None
+
 
 def mark_price(cl, symbol):
     t = lst(cl.get_tickers(category=CAT, symbol=symbol))
@@ -304,7 +332,7 @@ def run_once(cl, inst):
         if d is not None and len(d): data[c] = d
 
     # защита: аварийный стоп по просадке и фильтр режима рынка (только для НОВЫХ входов)
-    reg_cfg, brk_cfg = protection_cfg()
+    reg_cfg, brk_cfg = protection_cfg(); gt_cfg = gate_cfg()
     breaker = circuit_breaker.Breaker(BREAKER_F, brk_cfg, BREAKER_RESET_F)
     try:
         brk = breaker.update(equity)
@@ -340,6 +368,8 @@ def run_once(cl, inst):
         row = jbase(coin, p["dir"]); row.update(action="exit", reason=reason, price=px, qty=p["qty"], stop=p["stop"],
               pnl_usd=pnl, pnl_pct_equity=100 * pnl / max(p.get("equity_at_entry", equity), 1e-9),
               outcome="win" if pnl > 0 else "loss", order_id=oid)
+        if pnl < 0 and "на бирже" in reason:   # стоп-аут -> пауза перед повторным входом по монете
+            S.setdefault("stopouts", {})[coin] = int(time.time() * 1000)
         journal(row); S["positions"].pop(coin, None); save_state(S)
         log(f"{coin}: закрыт {'лонг' if p['dir']=='long' else 'шорт'} по {px:.6g}, PnL {pnl:+.2f} USDT ({reason})")
 
@@ -408,7 +438,7 @@ def run_once(cl, inst):
         if len(pos) >= MAX_POS:
             row.update(action="skip", reason=f"уже {MAX_POS} позиции"); journal(row)
             log(f"{coin}: свежий сигнал {fresh}, но уже {MAX_POS} позиции — пропуск"); return False
-        px = mark_price(cl, sym(coin))
+        tk = ticker_info(cl, sym(coin)); px = tk["mark"]
         lev = int(min(LEV, ins["maxLev"]))
         if rmult < 1: log(f"{coin}: режим рынка {reg['score']:.0f}/100 против {fresh} — вход половинным размером")
         qty = min(risk * equity * gate["size_mult"] * rmult / dist, lev * equity / px,
@@ -416,6 +446,24 @@ def run_once(cl, inst):
         qty = q_floor(qty, ins["qtyStep"])
         if float(qty) < ins["minQty"] or float(qty) * px < ins["minNotional"] or qty <= 0:
             row.update(action="skip", reason=f"объём {qty} меньше минимального / лимит объёма"); journal(row); return False
+        # проверка перед сделкой: план стопа/тейка от текущей цены
+        if MODE == "active":
+            p_stop, p_tp = active_strategy.levels(px, atr_sig, fresh, acfg)
+        else:
+            p_stop, p_tp = (px + dist if fresh == "short" else px - dist), None
+        ok, bad, notes = pre_trade_gate.check(
+            {"coin": coin, "direction": fresh, "price": px, "qty": float(qty), "stop": p_stop, "tp": p_tp,
+             "equity": equity, "risk_pct": 100 * risk, "require_tp": MODE == "active"},
+            {"profile": st_cfg.get("profile"), "positions": S["positions"], "exch_symbols": set(pos), "symbol": sym(coin),
+             "open_order_symbols": open_order_symbols(cl), "news_block": bool(gate.get("block_new_entries")),
+             "stopouts": S.get("stopouts", {}), "now_ms": time.time() * 1000, "bid": tk["bid"], "ask": tk["ask"]},
+            gt_cfg)
+        for n_ in notes: log(f"{coin}: {n_}")
+        if not ok:
+            row.update(action="skip", reason="проверка перед сделкой: " + "; ".join(bad), price=px, qty=float(qty), stop=p_stop)
+            journal(row)
+            log(f"{coin}: {('сделка дня ' if why == 'daily' else 'сигнал ')}{'лонг' if fresh=='long' else 'шорт'} НЕ открыт — проверка перед сделкой: " + "; ".join(bad))
+            return False
         set_lev(cl, sym(coin), lev)
         oid = market(cl, sym(coin), "Sell" if fresh == "short" else "Buy", qty, False)
         ep = wait_position(cl, sym(coin), want_open=True)
@@ -515,21 +563,25 @@ def run_once(cl, inst):
     if MODE == "active" and st_cfg["daily_min_trade"] and new_bar and not brk["block_new"]:
         last_e = int(S.get("last_entry_ms", 0) or 0)
         if time.time() * 1000 - last_e >= 86_400_000 and len(pos) < MAX_POS:
-            best = None
+            best = None; cands = []
             for coin, x in act.items():
                 if coin not in inst or coin in S["positions"] or sym(coin) in pos: continue
                 tr_, atr_ = int(x.trend.iloc[-1]), float(x.atr.iloc[-1])
                 hh, ll = float(x.h.iloc[-31:-1].max()), float(x.l.iloc[-31:-1].min())
                 if tr_ == 0 or not atr_ > 0 or len(x) < 31: continue
                 sc_ = (float(x.c.iloc[-1]) - hh) / atr_ if tr_ > 0 else (ll - float(x.c.iloc[-1])) / atr_
+                cands.append((sc_, coin, "long" if tr_ > 0 else "short"))
                 if best is None or sc_ > best[0]: best = (sc_, coin, "long" if tr_ > 0 else "short")
             if best:
                 log(f"сделка дня: за 24 часа входов не было — беру самый сильный сетап {best[1]} "
                     f"{'ЛОНГ' if best[2]=='long' else 'ШОРТ'} (до уровня пробоя {-best[0]:.2f} ATR)" if best[0] < 0 else
                     f"сделка дня: {best[1]} {'ЛОНГ' if best[2]=='long' else 'ШОРТ'}")
-                try: try_enter(best[1], best[2], "daily")
-                except Exception as e:
-                    msg = f"сделка дня {best[1]}: {e}"; print(f"Ошибка шага: {msg}", file=sys.stderr, flush=True); errors.append(msg)
+                for k_, (sc_, c_, d_) in enumerate(sorted(cands, reverse=True)[:3]):
+                    if k_: log(f"сделка дня: следующий кандидат {c_} {'ЛОНГ' if d_=='long' else 'ШОРТ'}")
+                    try:
+                        if try_enter(c_, d_, "daily"): break
+                    except Exception as e:
+                        msg = f"сделка дня {c_}: {e}"; print(f"Ошибка шага: {msg}", file=sys.stderr, flush=True); errors.append(msg); break
             else:
                 log("сделка дня: нет монеты с ясным трендом, пропускаю")
 

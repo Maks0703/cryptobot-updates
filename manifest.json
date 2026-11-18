@@ -1,5 +1,5 @@
 {
- "version": "2026.11.18-2300",
+ "version": "2026.11.18-2319",
  "files": {
   "README.md": {
    "sha256": "33809bb01b4bf7d6473c29e456c2bc8bf69701da316c92acca6effb188f089e4",
@@ -26,8 +26,8 @@
    "size": 18186
   },
   "bybit_futures_bot.py": {
-   "sha256": "e93a364fea9267caa539e81b840f93abb76d1c508c0e1ee68d5881c4d42e7324",
-   "size": 44515
+   "sha256": "e0330019316d71305b012a2f51708600dfb31a8443a8de851af1eb25a6e1e2e2",
+   "size": 47836
   },
   "bybit_time.py": {
    "sha256": "679c5a57e732c3820f9410a673b020398dec481bc0f769ba1e72e9d82a979429",
@@ -38,14 +38,15 @@
    "size": 9084
   },
   "config.yaml": {
-   "sha256": "e6f9eb991ecaf892f8b3035eaa2843ea49541280be7c3a36bb03c5aab618d263",
-   "size": 6165,
+   "sha256": "a368c6ca1d30567c41e4b50c4af61bae0b998f1fa64227abf861ba43a539fb93",
+   "size": 7338,
    "mode": "if_unmodified",
    "known": [
     "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844",
     "447753de53d8ba58d312ae480e0146e2759aeb2e5d5f4336eabaf94ebc51aed1",
     "47f320ac04c8009c2e138140378ea012a92c55ac291c63429c05dae3363dbf8f",
-    "e6f9eb991ecaf892f8b3035eaa2843ea49541280be7c3a36bb03c5aab618d263"
+    "e6f9eb991ecaf892f8b3035eaa2843ea49541280be7c3a36bb03c5aab618d263",
+    "a368c6ca1d30567c41e4b50c4af61bae0b998f1fa64227abf861ba43a539fb93"
    ]
   },
   "fetch_alt_funding.py": {
@@ -83,6 +84,10 @@
   "kraken_futures_bot.py": {
    "sha256": "0020387f19e0b31f56a3bbb545e7533d09abe38c4ce5641b3a4cbb5484eff1bc",
    "size": 22577
+  },
+  "pre_trade_gate.py": {
+   "sha256": "9f6317b5b8e07cc6de4eca2eabbbb1a2a7dcbb80148f23392e50a41487ca0dec",
+   "size": 8133
   },
   "regime_filter.py": {
    "sha256": "37389a8f10d16aeb381e96d67f89069793c1af5be8d924908e11d415f9e28c39",
