@@ -1,13 +1,13 @@
 {
- "version": "2026.11.18-2319",
+ "version": "2026.11.18-2333",
  "files": {
   "README.md": {
    "sha256": "33809bb01b4bf7d6473c29e456c2bc8bf69701da316c92acca6effb188f089e4",
    "size": 4808
   },
   "active_strategy.py": {
-   "sha256": "fb4002614729da2883259c9111dfd3477e3b8b49a5c5c7d128ddd3ab9e2e6b0f",
-   "size": 4898
+   "sha256": "07f72f6d64448fd3a7655423f99c3b917e0792610e94946ebcdac357d6df71f4",
+   "size": 6363
   },
   "alts_backtest.py": {
    "sha256": "ff2b598d318575aefab246d5a3387d7153ffa9c12567655fd1d09acaf040bc2d",
@@ -26,8 +26,8 @@
    "size": 18186
   },
   "bybit_futures_bot.py": {
-   "sha256": "e0330019316d71305b012a2f51708600dfb31a8443a8de851af1eb25a6e1e2e2",
-   "size": 47836
+   "sha256": "1c1204264596bf84c3b86f70ac3dcde4a0f897aa304ab9145051b8739fb085fa",
+   "size": 49317
   },
   "bybit_time.py": {
    "sha256": "679c5a57e732c3820f9410a673b020398dec481bc0f769ba1e72e9d82a979429",
@@ -38,15 +38,16 @@
    "size": 9084
   },
   "config.yaml": {
-   "sha256": "a368c6ca1d30567c41e4b50c4af61bae0b998f1fa64227abf861ba43a539fb93",
-   "size": 7338,
+   "sha256": "fcd0593f7f105376a72834b87f26bc4e8f6d5526ca27bea4bfd4e68b5b8409dd",
+   "size": 8038,
    "mode": "if_unmodified",
    "known": [
     "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844",
     "447753de53d8ba58d312ae480e0146e2759aeb2e5d5f4336eabaf94ebc51aed1",
     "47f320ac04c8009c2e138140378ea012a92c55ac291c63429c05dae3363dbf8f",
     "e6f9eb991ecaf892f8b3035eaa2843ea49541280be7c3a36bb03c5aab618d263",
-    "a368c6ca1d30567c41e4b50c4af61bae0b998f1fa64227abf861ba43a539fb93"
+    "a368c6ca1d30567c41e4b50c4af61bae0b998f1fa64227abf861ba43a539fb93",
+    "fcd0593f7f105376a72834b87f26bc4e8f6d5526ca27bea4bfd4e68b5b8409dd"
    ]
   },
   "fetch_alt_funding.py": {

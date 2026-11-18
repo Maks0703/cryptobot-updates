@@ -3,11 +3,13 @@
 
 Режим по умолчанию — АКТИВНЫЙ (config.yaml -> futures_strategy -> mode: active), см. active_strategy.py:
   тренд 4h (EMA50/200) задаёт направление; вход на пробое максимума/минимума последних 30 свечей 4h
-  по тренду; стоп 3 ATR и тейк 4 ATR ставятся на бирже; выход по времени через 30 свечей (5 дней);
-  риск 1% на сделку, плечо до 3x, до 4 позиций. В среднем ~0.7 сделки в день по 8 монетам (бэктест).
+  по тренду; стоп 3 ATR и тейк 4 ATR ставятся на бирже; выход по времени через max_hold_bars свечей
+  (по умолчанию 30 = 5 дней; агрессивный config: 12 = 2 дня + daily_trades: 3 -> ~2-3 сделки в день по 33 монетам).
+  Без config: риск 1% на сделку, плечо до 3x, до 4 позиций.
 Плюс фильтр режима рынка (regime_filter.py) и аварийный стоп по просадке (circuit_breaker.py).
 Монеты, риск, число позиций и «сделка дня» задаются в config.yaml (futures_strategy: coins, profile,
-risk_pct, max_positions, daily_min_trade). Профиль aggressive разрешает риск до 10% (только демо),
+risk_pct, max_positions, daily_min_trade, daily_trades). daily_trades: N>1 = «сделки дня»: если за последние
+24 часа входов меньше N, бот добирает самым сильным сетапом по тренду (не больше 1 добора за прогон). Профиль aggressive разрешает риск до 10% (только демо),
 обычный — до 2%. Монеты, которых нет на Bybit, пропускаются. Объём округляется по qtyStep/minQty/minNotional биржи.
 
 Старый режим mode: ema_cross (как kraken_futures_bot.py / alts_short_backtest.py "EMA (50,200)", лонг и шорт):
@@ -41,6 +43,7 @@ REPORT_COLS = ["time", "equity", "usdt", "unrealized_pnl", "open_positions", "ch
 DEFAULT_COINS = ["ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "AVAX", "LINK"]
 COINS = list(DEFAULT_COINS)   # список берётся из config.yaml -> futures_strategy -> coins
 MAX_COINS, MAX_POS_CAP = 40, 8
+MAX_DAILY_TRADES = 5          # жёсткий потолок «сделок дня» за 24 часа
 FAST, SLOW, ATR_N, STOP_K = 50, 200, 14, 5.0
 RISK, LEV, MAX_POS, TOTAL_NOTIONAL_X = 0.02, 3, 4, 3.0
 ACTIVE_RISK = 0.01            # риск на сделку в активном режиме (стоп ближе, сделок больше)
@@ -121,7 +124,7 @@ def news_gate():
 def strategy_cfg():
     """Раздел futures_strategy из config.yaml: mode active (по умолчанию) или ema_cross (старая стратегия)."""
     out = {"mode": "active", "risk_pct": ACTIVE_RISK * 100, "active": {}, "profile": "normal",
-           "coins": list(DEFAULT_COINS), "max_positions": 4, "daily_min_trade": False}
+           "coins": list(DEFAULT_COINS), "max_positions": 4, "daily_min_trade": False, "daily_trades": 1}
     try:
         import yaml, re
         with open(CONFIG_F, encoding="utf-8") as fh: c = (yaml.safe_load(fh) or {}).get("futures_strategy") or {}
@@ -135,6 +138,7 @@ def strategy_cfg():
         if coins: out["coins"] = list(dict.fromkeys(coins))[:MAX_COINS]
         out["max_positions"] = int(min(max(f(c.get("max_positions"), 4), 1), MAX_POS_CAP))
         out["daily_min_trade"] = bool(c.get("daily_min_trade", False))
+        out["daily_trades"] = int(min(max(f(c.get("daily_trades"), 1), 1), MAX_DAILY_TRADES))
     except FileNotFoundError: pass
     except Exception as e: log(f"config.yaml: раздел futures_strategy не прочитан ({str(e)[:80]}), активный режим по умолчанию")
     return out
@@ -348,7 +352,8 @@ def run_once(cl, inst):
         for c_, d_ in data.items():
             x = safe(f"{c_} сигналы", active_strategy.compute, d_[["t", "o", "h", "l", "c"]], acfg, None, BAR_MS)
             if x is not None: act[c_] = x
-        log(f"стратегия: АКТИВНАЯ (пробой {acfg['breakout_n']} свечей 4h по тренду, стоп {acfg['sl_atr']:g} ATR, "
+        log(f"стратегия: АКТИВНАЯ (пробой {acfg['breakout_n']} свечей 4h по тренду"
+            f"{' (наклон EMA50)' if acfg.get('trend_mode') == 'slope' else ''}, стоп {acfg['sl_atr']:g} ATR, "
             f"тейк {acfg['tp_atr']:g} ATR, до {acfg['max_hold_bars']} свечей), риск {st_cfg['risk_pct']:g}%"
             if acfg["kind"] == "breakout" else f"стратегия: АКТИВНАЯ ({acfg['kind']}), риск {st_cfg['risk_pct']:g}%")
     else:
@@ -488,7 +493,11 @@ def run_once(cl, inst):
         tp_txt = f", тейк {S['positions'][coin]['tp']:.6g}" if S["positions"][coin].get("tp") else ""
         log(f"{coin}: ОТКРЫТ {'ЛОНГ' if fresh=='long' else 'ШОРТ'} {real_qty} по {fill:.6g}, стоп {S['positions'][coin]['stop']:.6g}{tp_txt}, "
             f"объём {real_qty*fill:.0f} USDT")
-        S["last_entry_ms"] = int(time.time() * 1000); save_state(S)
+        prev_ = S.get("entries_ms")
+        if prev_ is None: prev_ = [S["last_entry_ms"]] if S.get("last_entry_ms") else []   # state старой версии
+        S["last_entry_ms"] = int(time.time() * 1000)
+        S["entries_ms"] = [int(t) for t in prev_ if S["last_entry_ms"] - int(t) < 86_400_000] + [S["last_entry_ms"]]
+        save_state(S)
         return True
 
     for coin in COINS:
@@ -559,24 +568,30 @@ def run_once(cl, inst):
             if "10001" in str(e) and "position idx" in str(e).lower():
                 print("Подсказка: переключите фьючерсы USDT в односторонний режим (One-Way) в настройках Bybit.", file=sys.stderr)
 
-    # 2б) «сделка дня»: если за 24 часа не было ни одного входа — открыть самый сильный сетап по тренду
+    # 2б) «сделка дня»: если за 24 часа не было ни одного входа (или входов меньше daily_trades) — открыть самый сильный сетап по тренду
     if MODE == "active" and st_cfg["daily_min_trade"] and new_bar and not brk["block_new"]:
-        last_e = int(S.get("last_entry_ms", 0) or 0)
-        if time.time() * 1000 - last_e >= 86_400_000 and len(pos) < MAX_POS:
+        last_e = int(S.get("last_entry_ms", 0) or 0); now_ms = time.time() * 1000
+        n_day = st_cfg.get("daily_trades", 1)
+        n24 = len([t for t in S.get("entries_ms", []) if now_ms - int(t) < 86_400_000])
+        if n_day > 1:
+            n24 = max(n24, 1 if now_ms - last_e < 86_400_000 else 0)
+        due = (n24 < n_day) if n_day > 1 else (now_ms - last_e >= 86_400_000)
+        if due and len(pos) < MAX_POS:
             best = None; cands = []
             for coin, x in act.items():
                 if coin not in inst or coin in S["positions"] or sym(coin) in pos: continue
-                tr_, atr_ = int(x.trend.iloc[-1]), float(x.atr.iloc[-1])
-                hh, ll = float(x.h.iloc[-31:-1].max()), float(x.l.iloc[-31:-1].min())
-                if tr_ == 0 or not atr_ > 0 or len(x) < 31: continue
-                sc_ = (float(x.c.iloc[-1]) - hh) / atr_ if tr_ > 0 else (ll - float(x.c.iloc[-1])) / atr_
-                cands.append((sc_, coin, "long" if tr_ > 0 else "short"))
-                if best is None or sc_ > best[0]: best = (sc_, coin, "long" if tr_ > 0 else "short")
+                r_ = active_strategy.setup_score(x, acfg["breakout_n"], acfg)
+                if r_ is None: continue
+                cands.append((r_[0], coin, r_[1]))
+            cands.sort(key=lambda z: -z[0])                     # сильнейший сетап первым (при равенстве — порядок монет в config)
+            best = cands[0] if cands else None
             if best:
-                log(f"сделка дня: за 24 часа входов не было — беру самый сильный сетап {best[1]} "
-                    f"{'ЛОНГ' if best[2]=='long' else 'ШОРТ'} (до уровня пробоя {-best[0]:.2f} ATR)" if best[0] < 0 else
-                    f"сделка дня: {best[1]} {'ЛОНГ' if best[2]=='long' else 'ШОРТ'}")
-                for k_, (sc_, c_, d_) in enumerate(sorted(cands, reverse=True)[:3]):
+                if n_day > 1: log(f"сделки дня: за 24 часа входов {n24} из {n_day} — добираю")
+                why_ = "за 24 часа входов не было — " if n_day <= 1 else ""
+                dir_ = "ЛОНГ" if best[2] == "long" else "ШОРТ"
+                log(f"сделка дня: {why_}беру самый сильный сетап {best[1]} {dir_} (до уровня пробоя {-best[0]:.2f} ATR)" if best[0] < 0 else
+                    f"сделка дня: {why_}{best[1]} {dir_}")
+                for k_, (sc_, c_, d_) in enumerate(cands[:3]):
                     if k_: log(f"сделка дня: следующий кандидат {c_} {'ЛОНГ' if d_=='long' else 'ШОРТ'}")
                     try:
                         if try_enter(c_, d_, "daily"): break
@@ -703,7 +718,8 @@ def main():
     log(f"демо-счёт Bybit ({cl.endpoint}), профиль {'АГРЕССИВНЫЙ' if sc['profile']=='aggressive' else 'обычный'}, "
         f"монет {len(sc['coins'])}: {' '.join(sc['coins'])}")
     log(f"стратегия {'АКТИВНАЯ' if sc['mode']=='active' else 'EMA50/200'}, риск {sc['risk_pct'] if sc['mode']=='active' else RISK*100:g}% на сделку, "
-        f"плечо до {LEV}x, макс. {sc['max_positions']} позиций" + (", сделка каждый день: да" if sc["daily_min_trade"] else ""))
+        f"плечо до {LEV}x, макс. {sc['max_positions']} позиций" + ((f", сделок в день: не меньше {sc['daily_trades']}" if sc["daily_trades"] > 1 else ", сделка каждый день: да")
+                                                                          if sc["daily_min_trade"] else ""))
     try_one_way(cl)
     inst = None; missing = set()
     while True:
