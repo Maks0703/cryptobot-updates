@@ -1,0 +1,89 @@
+{
+ "version": "2026.11.18-2219",
+ "files": {
+  "README.md": {
+   "sha256": "33809bb01b4bf7d6473c29e456c2bc8bf69701da316c92acca6effb188f089e4",
+   "size": 4808
+  },
+  "alts_backtest.py": {
+   "sha256": "ff2b598d318575aefab246d5a3387d7153ffa9c12567655fd1d09acaf040bc2d",
+   "size": 16307
+  },
+  "alts_short_backtest.py": {
+   "sha256": "b0f4d0710cbf147e099ad5e4366043e26ff862f542a915bd8d154bba4cd7855d",
+   "size": 18331
+  },
+  "backtest.py": {
+   "sha256": "e85c46f669b8e946418f6e9f45c40ac8c274125888688d46a39423262d1607a0",
+   "size": 4442
+  },
+  "bot.py": {
+   "sha256": "dd07fae930cb068ed82f59a1d4da71118dffe1e060fba63454cd0f43c2fd7c8e",
+   "size": 17858
+  },
+  "bybit_futures_bot.py": {
+   "sha256": "2c08cf8bcd7365d344a9bd16cce42e8b66349becd138469b846bbdacb1469840",
+   "size": 30426
+  },
+  "config.yaml": {
+   "sha256": "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844",
+   "size": 2385,
+   "mode": "if_unmodified",
+   "known": [
+    "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844"
+   ]
+  },
+  "fetch_alt_funding.py": {
+   "sha256": "861ce7e3118a0d182cf1c41affe0ac6a2505c5a9b7b6ea28ee104ee72fd7c8a2",
+   "size": 1255
+  },
+  "fetch_alts.py": {
+   "sha256": "6a35f4e483bb926e1e0925e592d2676faa1b05a1d156e825ff88a42ef7de0b40",
+   "size": 1446
+  },
+  "fetch_data.py": {
+   "sha256": "04e2ae9820e22736fba5de657e87599694fa3ffff2b709257c3b469a9700bc97",
+   "size": 3469
+  },
+  "fetch_futures_data.py": {
+   "sha256": "4f53920f7922b3405dcec6ec497fb7e8d9b5a975de79de33c4fc74bb3fa18f41",
+   "size": 2038
+  },
+  "futures_backtest.py": {
+   "sha256": "5881672187d0eb225d8129e3be449d4fad47f06242174e4639b05552d2e19429",
+   "size": 12767
+  },
+  "hl_copy_test.py": {
+   "sha256": "89d55b48ebe9ea5623bb72b0debd3dd275a30d0ee6c5d0089bf1a496c320f65b",
+   "size": 14401
+  },
+  "keys.py": {
+   "sha256": "e178f043d2438e50a4924852435794cfa73e05826ce8715383a6c0fe6a02fc06",
+   "size": 2574
+  },
+  "kraken_dca.py": {
+   "sha256": "a50024ce558e48c10ed96140cd6a2e97933f1972bbefd056334dbe260c841b7f",
+   "size": 1218
+  },
+  "kraken_futures_bot.py": {
+   "sha256": "0020387f19e0b31f56a3bbb545e7533d09abe38c4ce5641b3a4cbb5484eff1bc",
+   "size": 22577
+  },
+  "requirements.txt": {
+   "sha256": "dad7811282239d418c36427e1e4b00ffd5ebffe3b830f2d81effe417e7c8152b",
+   "size": 61
+  },
+  "strategy.py": {
+   "sha256": "b2fe10522378d3814b892ba9f47103df28bc82a475b0a07d7ea433102ef11c38",
+   "size": 5834
+  },
+  "updater.py": {
+   "sha256": "cfa6b056303d0cdac7279993d0252cefcfe0177a1c70a383d384ed522c091f22",
+   "size": 14405
+  },
+  "ЗАПУСК.bat": {
+   "sha256": "2334e1c936a8ac95cb05e53d6b2777ac346d1829c8bbf4dff63a94aa3c591bdd",
+   "size": 1778
+  }
+ }
+}

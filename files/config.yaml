@@ -1,0 +1,41 @@
+# ===== Настройки DCA-бота (спот BTC/USDT, без плеча) =====
+symbol: BTCUSDT
+category: spot            # только спот. Другие значения бот отвергает.
+
+limits:
+  max_total_budget_usdt: 1000   # жёсткий потолок: больше этой суммы бот не потратит никогда
+  max_order_usdt: 50            # максимум на одну покупку
+  min_order_usdt: 5             # меньше — ордер не отправляется (минимум биржи)
+
+dca:
+  interval_days: 7              # регулярная покупка раз в N дней
+  # сумма регулярной покупки. null = бюджет * base_share / число периодов
+  base_order_usdt: null
+  base_share: 0.7               # доля бюджета на регулярные покупки (остальное — резерв на просадки)
+  horizon_days: 730             # на какой срок растягиваем бюджет
+
+dips:
+  enabled: true
+  lookback_days: 30             # "недавний максимум" = максимум цены закрытия за N дней
+  level_cooldown_days: 7        # один и тот же уровень просадки не срабатывает чаще раза в N дней
+  # уровень просадки от недавнего максимума -> сумма доп. покупки.
+  # Каждый уровень срабатывает 1 раз, пока цена не обновит максимум.
+  levels:
+    - {drawdown_pct: 5,  order_usdt: 15}
+    - {drawdown_pct: 10, order_usdt: 25}
+    - {drawdown_pct: 20, order_usdt: 40}
+
+take_profit:
+  enabled: false                # по умолчанию выключено
+  trigger_pct: 50               # цена выше средней цены входа на N%
+  sell_fraction: 0.2            # продать такую долю BTC
+  cooldown_days: 30             # не чаще раза в N дней
+
+fees:
+  taker_pct: 0.1                # комиссия Bybit спот (тейкер) для бэктеста
+
+mode:
+  # backtest | testnet. live разрешён ТОЛЬКО если live_enabled: true
+  # И при запуске указан флаг --i-understand-real-money
+  live_enabled: false
+  state_file: state.json
