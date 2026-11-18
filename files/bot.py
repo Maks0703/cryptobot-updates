@@ -9,6 +9,7 @@
 """
 import argparse, dataclasses, json, math, os, sys, time
 import yaml
+import bybit_time
 from strategy import State, decide
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -56,7 +57,10 @@ def make_client(testnet):
     from pybit.unified_trading import HTTP
     tld = os.environ.get("BYBIT_TLD", "com")  # com = глобальный Bybit, eu = Bybit EU
     # testnet-режим = Демо-торговля Bybit (api-demo.bybit.com), виртуальные деньги
-    return HTTP(testnet=False, demo=testnet, api_key=key, api_secret=secret, tld=tld, recv_window=10000)
+    c = HTTP(testnet=False, demo=testnet, api_key=key, api_secret=secret, tld=tld, recv_window=20000)
+    import bybit_time   # часы ПК могут спешить -> ErrCode 10002; берём время сервера Bybit
+    bybit_time.install(c, log=lambda m: print(m, flush=True))
+    return c
 
 
 def load_state(path):
@@ -294,12 +298,15 @@ def cmd_trade(cfg, a, testnet):
     synced = False
     while True:
         try:
+            bybit_time.ensure_synced()
             if not synced:
                 st, synced = sync_if_needed(cfg, client, st, has_history, sp)
             if synced:
                 step(cfg, client, st, sp, testnet)
         except Exception as e:
             print("Ошибка шага:", e, file=sys.stderr)
+            if "10002" in str(e):
+                bybit_time.on_10002()
             if "403" in str(e):
                 print("Похоже, Bybit блокирует ваш IP/страну (или превышен лимит запросов). "
                       "Запускайте бота с компьютера в стране, где Bybit доступен.", file=sys.stderr)

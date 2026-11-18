@@ -32,10 +32,29 @@ NEVER = {"keys.json", "update_url.txt", "version.txt", "updater.log"}
 NEVER_DIRS = {"state", "journal", "data", "results", "_backup", ".venv", "__pycache__", ".git"}
 ALLOWED_EXT = {".py", ".bat", ".txt", ".md", ".yaml"}
 
-BOTS = [
+ALL_BOTS = [
     ("Криптобот: спот BTC", ["bot.py", "testnet", "--loop"]),
     ("Криптобот: фьючерсы", ["bybit_futures_bot.py", "--loop"]),
 ]
+
+
+def spot_enabled():
+    """config.yaml: строка «spot_enabled: true» включает спот-бот. Нет строки/файла = спот выключен."""
+    try:
+        for line in (HERE / "config.yaml").read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line.startswith("spot_enabled:"):
+                return line.split(":", 1)[1].strip().lower() in ("true", "yes", "on", "1")
+    except OSError:
+        pass
+    return False
+
+
+def active_bots():
+    return [b for b in ALL_BOTS if b[1][0] != "bot.py" or spot_enabled()]
+
+
+BOTS = active_bots()
 WIN = os.name == "nt"
 
 
@@ -261,6 +280,8 @@ def save_pids(procs):
 
 def run(check_hours):
     kill_old_copies()
+    if not spot_enabled():
+        log("спот-бот (покупка BTC) выключен в config.yaml (spot_enabled: false), запускаю только фьючерсный бот")
     procs = {t: start_bot(t, a) for t, a in BOTS}
     save_pids(procs)
     log("боты запущены. Обновления проверяю раз в %g ч. Это окно не закрывайте." % check_hours)

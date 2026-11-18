@@ -1,9 +1,13 @@
 {
- "version": "2026.11.18-2219",
+ "version": "2026.11.18-2236",
  "files": {
   "README.md": {
    "sha256": "33809bb01b4bf7d6473c29e456c2bc8bf69701da316c92acca6effb188f089e4",
    "size": 4808
+  },
+  "active_strategy.py": {
+   "sha256": "fb4002614729da2883259c9111dfd3477e3b8b49a5c5c7d128ddd3ab9e2e6b0f",
+   "size": 4898
   },
   "alts_backtest.py": {
    "sha256": "ff2b598d318575aefab246d5a3387d7153ffa9c12567655fd1d09acaf040bc2d",
@@ -18,19 +22,28 @@
    "size": 4442
   },
   "bot.py": {
-   "sha256": "dd07fae930cb068ed82f59a1d4da71118dffe1e060fba63454cd0f43c2fd7c8e",
-   "size": 17858
+   "sha256": "e5b6db8760d746988888ab7a11bedffcc780dd4ab21717059c39a5ec8ffed9a0",
+   "size": 18186
   },
   "bybit_futures_bot.py": {
-   "sha256": "2c08cf8bcd7365d344a9bd16cce42e8b66349becd138469b846bbdacb1469840",
-   "size": 30426
+   "sha256": "e00d6a0706d7a9879fada483444152eb588d02afa4de23c8f0276cf1ef5a23b0",
+   "size": 39958
+  },
+  "bybit_time.py": {
+   "sha256": "679c5a57e732c3820f9410a673b020398dec481bc0f769ba1e72e9d82a979429",
+   "size": 6807
+  },
+  "circuit_breaker.py": {
+   "sha256": "2569dd582d531fedb30c22e5d7d609c09b44965d45d40a26462e7e08d43f245e",
+   "size": 9084
   },
   "config.yaml": {
-   "sha256": "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844",
-   "size": 2385,
+   "sha256": "447753de53d8ba58d312ae480e0146e2759aeb2e5d5f4336eabaf94ebc51aed1",
+   "size": 5186,
    "mode": "if_unmodified",
    "known": [
-    "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844"
+    "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844",
+    "447753de53d8ba58d312ae480e0146e2759aeb2e5d5f4336eabaf94ebc51aed1"
    ]
   },
   "fetch_alt_funding.py": {
@@ -69,6 +82,10 @@
    "sha256": "0020387f19e0b31f56a3bbb545e7533d09abe38c4ce5641b3a4cbb5484eff1bc",
    "size": 22577
   },
+  "regime_filter.py": {
+   "sha256": "37389a8f10d16aeb381e96d67f89069793c1af5be8d924908e11d415f9e28c39",
+   "size": 7187
+  },
   "requirements.txt": {
    "sha256": "dad7811282239d418c36427e1e4b00ffd5ebffe3b830f2d81effe417e7c8152b",
    "size": 61
@@ -78,12 +95,12 @@
    "size": 5834
   },
   "updater.py": {
-   "sha256": "cfa6b056303d0cdac7279993d0252cefcfe0177a1c70a383d384ed522c091f22",
-   "size": 14405
+   "sha256": "f58853eb7dea7b2be706892a15d5169c232b3f2fcebc5f17321cdf872ec7be2c",
+   "size": 15227
   },
   "ЗАПУСК.bat": {
-   "sha256": "2334e1c936a8ac95cb05e53d6b2777ac346d1829c8bbf4dff63a94aa3c591bdd",
-   "size": 1778
+   "sha256": "295738e5e755978452d2c78999337f655e1fcc6b8d1ebf63001d74cdc7631b5e",
+   "size": 1788
   }
  }
 }

@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Фьючерсный бот для ДЕМО-счёта Bybit (Demo Trading, api-demo.bybit.com). ТОЛЬКО ДЕМО, режима live НЕТ.
 
-Стратегия (как kraken_futures_bot.py / alts_short_backtest.py "EMA (50,200)", лонг и шорт):
+Режим по умолчанию — АКТИВНЫЙ (config.yaml -> futures_strategy -> mode: active), см. active_strategy.py:
+  тренд 4h (EMA50/200) задаёт направление; вход на пробое максимума/минимума последних 30 свечей 4h
+  по тренду; стоп 3 ATR и тейк 4 ATR ставятся на бирже; выход по времени через 30 свечей (5 дней);
+  риск 1% на сделку, плечо до 3x, до 4 позиций. В среднем ~0.7 сделки в день по 8 монетам (бэктест).
+Плюс фильтр режима рынка (regime_filter.py) и аварийный стоп по просадке (circuit_breaker.py).
+
+Старый режим mode: ema_cross (как kraken_futures_bot.py / alts_short_backtest.py "EMA (50,200)", лонг и шорт):
   шорт-условие = EMA50 < EMA200 и close < EMA200 ; лонг-условие = EMA50 > EMA200 и close > EMA200
   вход   = условие только что включилось на ЗАКРЫТОЙ 4h свече (только свежий сигнал)
   выход  = условие выключилось на последней закрытой 4h свече -> закрытие по рынку
@@ -18,16 +24,21 @@ import argparse, csv, json, os, sys, time, traceback
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import pandas as pd
+import regime_filter, circuit_breaker, bybit_time, active_strategy
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE_F = os.path.join(BASE, "state", "bybit_futures_state.json")
 NEWS_F = os.path.join(BASE, "state", "news_gate.json")   # необязательный файл; нет файла = торговать как обычно
 JOURNAL_F = os.path.join(BASE, "journal", "bybit_futures_journal.csv")
+BREAKER_F = os.path.join(BASE, "state", "circuit_breaker.json")   # пик капитала для аварийного стопа
+BREAKER_RESET_F = os.path.join(BASE, circuit_breaker.RESET_FILE_NAME)
+CONFIG_F = os.path.join(BASE, "config.yaml")
 REPORT_F = os.path.join(BASE, "отчёт.csv")   # история баланса, открывается в Excel
 REPORT_COLS = ["time", "equity", "usdt", "unrealized_pnl", "open_positions", "change_24h", "btc_value"]
 COINS = ["ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "AVAX", "LINK"]
 FAST, SLOW, ATR_N, STOP_K = 50, 200, 14, 5.0
 RISK, LEV, MAX_POS, TOTAL_NOTIONAL_X = 0.02, 3, 4, 3.0
+ACTIVE_RISK = 0.01            # риск на сделку в активном режиме (стоп ближе, сделок больше)
 BAR_MS = 14_400_000
 CAT = "linear"
 TAG = "[DEMO-FUT]"
@@ -58,10 +69,11 @@ def make_client():
                  "(права: Контракты/Деривативы — Ордера и Позиции, БЕЗ вывода средств) и задайте "
                  "BYBIT_API_KEY и BYBIT_API_SECRET.")
     from pybit.unified_trading import HTTP
-    c = HTTP(testnet=False, demo=True, tld="com", api_key=key, api_secret=secret, recv_window=10000)
+    c = HTTP(testnet=False, demo=True, tld="com", api_key=key, api_secret=secret, recv_window=20000)
     # жёсткая защита: работаем только с демо-сервером
     if not getattr(c, "demo", False) or "api-demo." not in str(getattr(c, "endpoint", "")):
         sys.exit(f"ОТКАЗ: клиент не в демо-режиме ({getattr(c, 'endpoint', '?')}). Этот бот работает только на демо-счёте.")
+    bybit_time.install(c, log=log)   # часы ПК могут спешить -> ErrCode 10002; берём время сервера Bybit
     return c
 
 
@@ -99,6 +111,34 @@ def news_gate():
             if age > timedelta(hours=26): g = {"block_new_entries": False, "size_mult": 1.0}  # устарел -> игнор
     except Exception: pass
     return g
+
+
+def strategy_cfg():
+    """Раздел futures_strategy из config.yaml: mode active (по умолчанию) или ema_cross (старая стратегия)."""
+    out = {"mode": "active", "risk_pct": ACTIVE_RISK * 100, "active": {}}
+    try:
+        import yaml
+        with open(CONFIG_F, encoding="utf-8") as fh: c = (yaml.safe_load(fh) or {}).get("futures_strategy") or {}
+        if str(c.get("mode", "active")).strip() in ("active", "ema_cross"): out["mode"] = str(c.get("mode", "active")).strip()
+        out["risk_pct"] = min(max(f(c.get("risk_pct"), ACTIVE_RISK * 100), 0.1), 2.0)   # жёстко 0.1..2%
+        out["active"] = c.get("active") or {}
+    except FileNotFoundError: pass
+    except Exception as e: log(f"config.yaml: раздел futures_strategy не прочитан ({str(e)[:80]}), активный режим по умолчанию")
+    return out
+
+
+def protection_cfg():
+    """Раздел futures_protection из config.yaml. Нет раздела/файла/ошибка -> значения по умолчанию из модулей."""
+    try:
+        import yaml
+        with open(CONFIG_F, encoding="utf-8") as fh: c = yaml.safe_load(fh) or {}
+        fp = c.get("futures_protection") or {}
+        return fp.get("regime_filter") or {}, fp.get("circuit_breaker") or {}
+    except FileNotFoundError:
+        return {}, {}
+    except Exception as e:
+        log(f"config.yaml: раздел futures_protection не прочитан ({str(e)[:80]}), беру настройки по умолчанию")
+        return {}, {}
 
 
 # ---------------- биржа ----------------
@@ -180,6 +220,16 @@ def set_stop(cl, symbol, price, tick, direction):
         if err_code(e) not in (34040,) and "34040" not in str(e): raise   # 34040 = стоп не изменился
     return float(px)
 
+def set_stop_tp(cl, symbol, stop, tp, tick, direction):
+    """Стоп и тейк на бирже одной командой. Округляем «шире», а не внутрь."""
+    sp = p_round(stop, tick, up=(direction == "short")); tpp = p_round(tp, tick, up=(direction == "long"))
+    try:
+        cl.set_trading_stop(category=CAT, symbol=symbol, positionIdx=0, tpslMode="Full",
+                            stopLoss=dstr(sp), slTriggerBy="MarkPrice", takeProfit=dstr(tpp), tpTriggerBy="LastPrice")
+    except Exception as e:
+        if err_code(e) not in (34040,) and "34040" not in str(e): raise
+    return float(sp), float(tpp)
+
 def market(cl, symbol, side, qty, reduce_only):
     r = cl.place_order(category=CAT, symbol=symbol, side=side, orderType="Market", qty=dstr(qty),
                        positionIdx=0, reduceOnly=reduce_only)
@@ -216,6 +266,7 @@ def closed_pnl(cl, symbol, since_ms, order_id=None, tries=1):
 # ---------------- один прогон ----------------
 def run_once(cl, inst):
     S = load_state(); gate = news_gate(); errors = []
+    st_cfg = strategy_cfg(); MODE = st_cfg["mode"]; acfg = active_strategy.merged(st_cfg["active"])
     def safe(label, fn, *a, **kw):
         try: return fn(*a, **kw)
         except Exception as e:
@@ -232,6 +283,29 @@ def run_once(cl, inst):
     for c in COINS:
         d = safe(f"{c} свечи", candles, cl, c)
         if d is not None and len(d): data[c] = d
+
+    # защита: аварийный стоп по просадке и фильтр режима рынка (только для НОВЫХ входов)
+    reg_cfg, brk_cfg = protection_cfg()
+    breaker = circuit_breaker.Breaker(BREAKER_F, brk_cfg, BREAKER_RESET_F)
+    try:
+        brk = breaker.update(equity)
+    except Exception as e:
+        brk = {"block_new": True, "close_all": False, "messages": [f"аварийный стоп: ошибка ({str(e)[:100]}), новые входы в этом прогоне пропускаю"],
+               "dd_day": 0.0, "dd_peak": 0.0, "peak": None}
+    for m in brk["messages"]: log(m)
+    log(breaker.status_line(brk))
+    reg = regime_filter.evaluate(cl, data, reg_cfg, log=log)
+    log(reg["text"])
+    act = {}
+    if MODE == "active":
+        for c_, d_ in data.items():
+            x = safe(f"{c_} сигналы", active_strategy.compute, d_[["t", "o", "h", "l", "c"]], acfg, None, BAR_MS)
+            if x is not None: act[c_] = x
+        log(f"стратегия: АКТИВНАЯ (пробой {acfg['breakout_n']} свечей 4h по тренду, стоп {acfg['sl_atr']:g} ATR, "
+            f"тейк {acfg['tp_atr']:g} ATR, до {acfg['max_hold_bars']} свечей), риск {st_cfg['risk_pct']:g}%"
+            if acfg["kind"] == "breakout" else f"стратегия: АКТИВНАЯ ({acfg['kind']}), риск {st_cfg['risk_pct']:g}%")
+    else:
+        log("стратегия: пересечение EMA50/200 на 4h (старый режим ema_cross)")
 
     def jbase(coin, direction=""):
         r = {"coin": coin, "symbol": sym(coin), "direction": direction, "equity": equity}
@@ -258,7 +332,7 @@ def run_once(cl, inst):
             if ep: pos[sym(coin)] = ep
         if ep is None or ep["dir"] != p["dir"]:
             px, pnl = closed_pnl(cl, sym(coin), p["opened_ms"])
-            finish(coin, p, px, pnl, "позиция закрыта на бирже (стоп-лосс или вручную)")
+            finish(coin, p, px, pnl, "позиция закрыта на бирже (стоп, тейк или вручную)")
         else:
             p["qty"] = ep["size"]   # размер берём с биржи
     # позиции бота на бирже, которых нет в файле (файл потерян) -> подхватываем
@@ -275,6 +349,20 @@ def run_once(cl, inst):
                 S["positions"][coin]["stop"] = safe(f"{coin} стоп", set_stop, cl, sym(coin), stop, inst[coin]["tick"], ep["dir"]) or stop
     save_state(S)
 
+    # 1б) «закрыть всё» (только если включено в config.yaml, по умолчанию выключено)
+    if brk.get("close_all"):
+        for coin, p in list(S["positions"].items()):
+            if coin not in inst: continue
+            try:
+                oid = market(cl, sym(coin), "Buy" if p["dir"] == "short" else "Sell", q_floor(p["qty"], inst[coin]["qtyStep"]), True)
+                wait_position(cl, sym(coin), want_open=False)
+                px, pnl = closed_pnl(cl, sym(coin), p["opened_ms"], oid, tries=4)
+                finish(coin, p, px or mark_price(cl, sym(coin)), pnl, "аварийный стоп: закрыть всё при большой просадке", oid)
+            except Exception as e:
+                msg = f"{coin}: аварийное закрытие не удалось: {e}"
+                print(f"Ошибка шага: {msg}", file=sys.stderr, flush=True); errors.append(msg)
+        if not any(c in S["positions"] for c in inst): breaker.mark_closed_all()
+
     # 2) по каждой монете: выход по смене сигнала, подтяжка стопа, свежий вход
     pos = exch_positions(cl)
     notional = sum(p["value"] for p in pos.values())
@@ -286,7 +374,16 @@ def run_once(cl, inst):
             if prev is not None and last_t <= prev: continue        # новой закрытой 4h свечи нет
             new_idx = (list(d.index[d.t > prev]) if prev else [d.index[-1]])[-2:]
             b = d.iloc[-1]; p = S["positions"].get(coin); ins = inst[coin]
-            if p:
+            if p and p.get("mode") == "active":
+                held = int((last_t - int(p.get("entry_bar_t", last_t))) // BAR_MS) + 1
+                if held >= int(p.get("max_hold", acfg["max_hold_bars"])):
+                    oid = market(cl, sym(coin), "Buy" if p["dir"] == "short" else "Sell", q_floor(p["qty"], ins["qtyStep"]), True)
+                    wait_position(cl, sym(coin), want_open=False)
+                    px, pnl = closed_pnl(cl, sym(coin), p["opened_ms"], oid, tries=4)
+                    finish(coin, p, px or float(b.c), pnl, f"время вышло ({held} свечей 4h)", oid)
+                    pos.pop(sym(coin), None)
+                    notional = sum(x["value"] for x in pos.values())
+            elif p:
                 if not bool(b[p["dir"]]):
                     oid = market(cl, sym(coin), "Buy" if p["dir"] == "short" else "Sell", q_floor(p["qty"], ins["qtyStep"]), True)
                     wait_position(cl, sym(coin), want_open=False)
@@ -317,23 +414,40 @@ def run_once(cl, inst):
                             log(f"{coin}: стоп подтянут {old:.6g} -> {p['stop']:.6g}")
             # свежий сигнал?
             fresh = None
-            for i in new_idx:
-                if i == 0: continue
-                for dr in ("short", "long"):
-                    if bool(d.loc[i, dr]) and not bool(d.loc[i - 1, dr]) and bool(b[dr]): fresh = dr
+            if MODE == "active":
+                x = act.get(coin)
+                if x is not None and int(x.t.iloc[-1]) == last_t:      # сигнал только на последней закрытой свече
+                    fresh = "long" if bool(x.long_sig.iloc[-1]) else "short" if bool(x.short_sig.iloc[-1]) else None
+            else:
+                for i in new_idx:
+                    if i == 0: continue
+                    for dr in ("short", "long"):
+                        if bool(d.loc[i, dr]) and not bool(d.loc[i - 1, dr]) and bool(b[dr]): fresh = dr
             S["last_bar"][coin] = last_t; save_state(S)
             if not fresh: continue
-            row = jbase(coin, fresh); dist = STOP_K * float(b.atr)
+            row = jbase(coin, fresh)
+            if MODE == "active":
+                atr_sig = float(act[coin].atr.iloc[-1]); dist = acfg["sl_atr"] * atr_sig; risk = st_cfg["risk_pct"] / 100
+            else:
+                dist = STOP_K * float(b.atr); risk = RISK
             if coin in S["positions"] or sym(coin) in pos:
                 row.update(action="skip", reason="уже есть позиция по монете"); journal(row); continue
             if gate.get("block_new_entries") or gate["size_mult"] <= 0:
                 row.update(action="skip", reason="новостной фильтр запретил вход"); journal(row); continue
+            if brk["block_new"]:
+                row.update(action="skip", reason="аварийный стоп по просадке запретил вход"); journal(row)
+                log(f"{coin}: свежий сигнал {fresh}, но аварийный стоп запрещает новые входы — пропуск"); continue
+            rmult = regime_filter.size_mult(reg["score"], fresh, reg_cfg) if reg.get("enabled") else 1.0
+            if rmult <= 0:
+                row.update(action="skip", reason=f"фильтр режима рынка ({reg['score']:.0f}/100) запретил {fresh}"); journal(row)
+                log(f"{coin}: свежий сигнал {fresh}, но режим рынка {reg['score']:.0f}/100 против него — пропуск"); continue
             if len(pos) >= MAX_POS:
                 row.update(action="skip", reason=f"уже {MAX_POS} позиции"); journal(row)
                 log(f"{coin}: свежий сигнал {fresh}, но уже {MAX_POS} позиции — пропуск"); continue
             px = mark_price(cl, sym(coin))
             lev = int(min(LEV, ins["maxLev"]))
-            qty = min(RISK * equity * gate["size_mult"] / dist, lev * equity / px,
+            if rmult < 1: log(f"{coin}: режим рынка {reg['score']:.0f}/100 против {fresh} — вход половинным размером")
+            qty = min(risk * equity * gate["size_mult"] * rmult / dist, lev * equity / px,
                       max(0.0, TOTAL_NOTIONAL_X * equity - notional) / px, ins["maxMkt"])
             qty = q_floor(qty, ins["qtyStep"])
             if float(qty) < ins["minQty"] or float(qty) * px < ins["minNotional"] or qty <= 0:
@@ -348,11 +462,19 @@ def run_once(cl, inst):
                                     "opened_ms": int(time.time() * 1000) - 30_000, "opened_at": now_utc().isoformat(),
                                     "equity_at_entry": equity, "signal_bar": bar_iso(b.t), "order_id": oid}
             save_state(S)
-            S["positions"][coin]["stop"] = set_stop(cl, sym(coin), stop, ins["tick"], fresh); save_state(S)
+            if MODE == "active":
+                stop, tp = active_strategy.levels(fill, atr_sig, fresh, acfg)
+                sp, tpp = set_stop_tp(cl, sym(coin), stop, tp, ins["tick"], fresh)
+                S["positions"][coin].update(stop=sp, tp=tpp, mode="active", entry_bar_t=last_t + BAR_MS,
+                                            max_hold=int(acfg["max_hold_bars"]))
+                save_state(S)
+            else:
+                S["positions"][coin]["stop"] = set_stop(cl, sym(coin), stop, ins["tick"], fresh); save_state(S)
             notional += real_qty * fill; pos[sym(coin)] = {"value": real_qty * fill}
-            row.update(action="entry", reason=f"свежий сигнал EMA{FAST}/{SLOW} {fresh}", price=fill, qty=real_qty,
+            row.update(action="entry", reason=(f"пробой/сигнал активной стратегии {fresh}" if MODE == "active" else f"свежий сигнал EMA{FAST}/{SLOW} {fresh}") + (f", размер x{rmult:g} (режим рынка)" if rmult < 1 else ""), price=fill, qty=real_qty,
                        notional=real_qty * fill, stop=S["positions"][coin]["stop"], order_id=oid); journal(row)
-            log(f"{coin}: ОТКРЫТ {'ЛОНГ' if fresh=='long' else 'ШОРТ'} {real_qty} по {fill:.6g}, стоп {S['positions'][coin]['stop']:.6g}, "
+            tp_txt = f", тейк {S['positions'][coin]['tp']:.6g}" if S["positions"][coin].get("tp") else ""
+            log(f"{coin}: ОТКРЫТ {'ЛОНГ' if fresh=='long' else 'ШОРТ'} {real_qty} по {fill:.6g}, стоп {S['positions'][coin]['stop']:.6g}{tp_txt}, "
                 f"объём {real_qty*fill:.0f} USDT")
         except Exception as e:
             tb = traceback.extract_tb(e.__traceback__)[-1]
@@ -475,16 +597,21 @@ def main():
     a = ap.parse_args()
     os.makedirs(os.path.dirname(STATE_F), exist_ok=True); os.makedirs(os.path.dirname(JOURNAL_F), exist_ok=True)
     cl = make_client()
-    log(f"демо-счёт Bybit ({cl.endpoint}), монеты: {' '.join(COINS)}, риск {RISK*100:.0f}%, плечо до {LEV}x, макс. {MAX_POS} позиции")
+    sc = strategy_cfg()
+    log(f"демо-счёт Bybit ({cl.endpoint}), монеты: {' '.join(COINS)}, стратегия {'АКТИВНАЯ' if sc['mode']=='active' else 'EMA50/200'}, "
+        f"риск {sc['risk_pct'] if sc['mode']=='active' else RISK*100:g}%, плечо до {LEV}x, макс. {MAX_POS} позиции")
     try_one_way(cl)
     inst = None
     while True:
         try:
+            bybit_time.ensure_synced()
             if not inst: inst = instruments(cl)
             run_once(cl, inst)
         except Exception as e:
             tb = traceback.extract_tb(e.__traceback__)
             print(f"Ошибка шага: {e}\n  " + " <- ".join(f"стр.{t.lineno} {t.name}" for t in tb[-3:]), file=sys.stderr, flush=True)
+            if "10002" in str(e):
+                bybit_time.on_10002()
             if "403" in str(e) or "10024" in str(e):
                 print("Похоже, Bybit блокирует доступ (страна/IP) или неверный ключ.", file=sys.stderr)
             if "10003" in str(e) or "10004" in str(e) or "10005" in str(e):
