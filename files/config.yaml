@@ -67,6 +67,6 @@ futures_protection:
   circuit_breaker:              # аварийный стоп по просадке капитала
     enabled: true
     daily_limit_pct: 5          # -5% за сутки UTC -> до 00:00 UTC (03:00 Минск) новых входов нет
-    peak_limit_pct: 15          # -15% от максимума -> новых входов нет до ручного сброса (файл сброс_стопа.txt)
+    peak_limit_pct: 20          # -20% от максимума -> новых входов нет до ручного сброса (файл сброс_стопа.txt)
     close_all_enabled: false    # true = при close_all_pct закрыть все позиции бота по рынку
     close_all_pct: 25

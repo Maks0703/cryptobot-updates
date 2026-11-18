@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 DEFAULTS = {
     "enabled": True,
     "daily_limit_pct": 5.0,
-    "peak_limit_pct": 15.0,
+    "peak_limit_pct": 20.0,
     "close_all_enabled": False,
     "close_all_pct": 25.0,
     "confirm_runs": 2,

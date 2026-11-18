@@ -1,5 +1,5 @@
 {
- "version": "2026.11.18-2236",
+ "version": "2026.11.18-2238",
  "files": {
   "README.md": {
    "sha256": "33809bb01b4bf7d6473c29e456c2bc8bf69701da316c92acca6effb188f089e4",
@@ -34,16 +34,17 @@
    "size": 6807
   },
   "circuit_breaker.py": {
-   "sha256": "2569dd582d531fedb30c22e5d7d609c09b44965d45d40a26462e7e08d43f245e",
+   "sha256": "1d2eeb6b06e0de7835c481e31fa1c6b46119fce160e253e047a09fc2ef402d93",
    "size": 9084
   },
   "config.yaml": {
-   "sha256": "447753de53d8ba58d312ae480e0146e2759aeb2e5d5f4336eabaf94ebc51aed1",
+   "sha256": "47f320ac04c8009c2e138140378ea012a92c55ac291c63429c05dae3363dbf8f",
    "size": 5186,
    "mode": "if_unmodified",
    "known": [
     "2918c3a9f6c4499dc0a462f3889885e55b02a4f27e41c69699f30fc039805844",
-    "447753de53d8ba58d312ae480e0146e2759aeb2e5d5f4336eabaf94ebc51aed1"
+    "447753de53d8ba58d312ae480e0146e2759aeb2e5d5f4336eabaf94ebc51aed1",
+    "47f320ac04c8009c2e138140378ea012a92c55ac291c63429c05dae3363dbf8f"
    ]
   },
   "fetch_alt_funding.py": {
